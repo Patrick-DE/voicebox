@@ -36,10 +36,23 @@ app = FastAPI(
     version=__version__,
 )
 
-# CORS middleware
+# CORS middleware - restrict to known local origins by default.
+# Set VOICEBOX_CORS_ORIGINS env var to a comma-separated list of origins
+# to allow additional origins (e.g. for remote server mode).
+_default_origins = [
+    "http://localhost:5173",     # Vite dev server
+    "http://127.0.0.1:5173",
+    "http://localhost:17493",
+    "http://127.0.0.1:17493",
+    "tauri://localhost",         # Tauri webview (macOS)
+    "https://tauri.localhost",   # Tauri webview (Windows/Linux)
+]
+_env_origins = os.environ.get("VOICEBOX_CORS_ORIGINS", "")
+_cors_origins = _default_origins + [o.strip() for o in _env_origins.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -542,12 +555,6 @@ async def generate_speech(
         if not profile:
             raise HTTPException(status_code=404, detail="Profile not found")
         
-        # Create voice prompt from profile
-        voice_prompt = await profiles.create_voice_prompt_for_profile(
-            data.profile_id,
-            db,
-        )
-        
         # Generate audio
         tts_model = tts.get_tts_model()
         # Load the requested model size if different from current (async to not block)
@@ -582,7 +589,15 @@ async def generate_speech(
                     }
                 )
 
+        # Load the requested model BEFORE creating voice prompt,
+        # so create_voice_prompt uses the correct model size
         await tts_model.load_model_async(model_size)
+
+        # Create voice prompt from profile
+        voice_prompt = await profiles.create_voice_prompt_for_profile(
+            data.profile_id,
+            db,
+        )
         audio, sample_rate = await tts_model.generate(
             data.text,
             voice_prompt,
