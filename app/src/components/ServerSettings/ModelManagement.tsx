@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Download, Loader2, Trash2 } from 'lucide-react';
+import { Download, Loader2, Plus, Trash2 } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import {
   AlertDialog,
@@ -14,6 +14,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 import { useToast } from '@/components/ui/use-toast';
 import { apiClient } from '@/lib/api/client';
 import { useModelDownloadToast } from '@/lib/hooks/useModelDownloadToast';
@@ -23,6 +24,8 @@ export function ModelManagement() {
   const queryClient = useQueryClient();
   const [downloadingModel, setDownloadingModel] = useState<string | null>(null);
   const [downloadingDisplayName, setDownloadingDisplayName] = useState<string | null>(null);
+  const [customModelUrl, setCustomModelUrl] = useState('');
+  const [customModelDisplayName, setCustomModelDisplayName] = useState('');
 
   const { data: modelStatus, isLoading } = useQuery({
     queryKey: ['modelStatus'],
@@ -63,6 +66,7 @@ export function ModelManagement() {
     name: string;
     displayName: string;
     sizeMb?: number;
+    isCustom?: boolean;
   } | null>(null);
 
   const handleDownload = async (modelName: string) => {
@@ -135,6 +139,36 @@ export function ModelManagement() {
       });
     },
   });
+
+  const addCustomModelMutation = useMutation({
+    mutationFn: async ({ url, displayName }: { url: string; displayName?: string }) => {
+      return apiClient.addCustomModel(url, displayName || undefined);
+    },
+    onSuccess: async (data) => {
+      toast({
+        title: 'Model added',
+        description: `${data.display_name} has been added to your custom models.`,
+      });
+      setCustomModelUrl('');
+      setCustomModelDisplayName('');
+      await queryClient.invalidateQueries({ queryKey: ['modelStatus'] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Failed to add model',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const handleAddCustomModel = () => {
+    if (!customModelUrl.trim()) return;
+    addCustomModelMutation.mutate({
+      url: customModelUrl.trim(),
+      displayName: customModelDisplayName.trim() || undefined,
+    });
+  };
 
   const formatSize = (sizeMb?: number): string => {
     if (!sizeMb) return 'Unknown';
@@ -213,6 +247,68 @@ export function ModelManagement() {
               </div>
             </div>
 
+            {/* Custom Models */}
+            <div>
+              <h3 className="text-sm font-semibold mb-3 text-muted-foreground">
+                Custom Models
+              </h3>
+              <div className="space-y-2">
+                {modelStatus.models
+                  .filter((m) => m.is_custom)
+                  .map((model) => (
+                    <ModelItem
+                      key={model.model_name}
+                      model={model}
+                      onDownload={() => handleDownload(model.model_name)}
+                      onDelete={() => {
+                        setModelToDelete({
+                          name: model.model_name,
+                          displayName: model.display_name,
+                          sizeMb: model.size_mb,
+                          isCustom: true,
+                        });
+                        setDeleteDialogOpen(true);
+                      }}
+                      isDownloading={downloadingModel === model.model_name}
+                      formatSize={formatSize}
+                    />
+                  ))}
+
+                {/* Add custom model form */}
+                <div className="pt-2 space-y-2">
+                  <Input
+                    placeholder="HuggingFace URL or repo ID (e.g., hexgrad/Kokoro-82M)"
+                    value={customModelUrl}
+                    onChange={(e) => setCustomModelUrl(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleAddCustomModel()}
+                    disabled={addCustomModelMutation.isPending}
+                  />
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="Display name (optional)"
+                      value={customModelDisplayName}
+                      onChange={(e) => setCustomModelDisplayName(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleAddCustomModel()}
+                      disabled={addCustomModelMutation.isPending}
+                    />
+                    <Button
+                      size="sm"
+                      onClick={handleAddCustomModel}
+                      disabled={!customModelUrl.trim() || addCustomModelMutation.isPending}
+                      variant="outline"
+                    >
+                      {addCustomModelMutation.isPending ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Plus className="h-4 w-4" />
+                      )}
+                      <span className="ml-1">Add</span>
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
           </div>
         ) : null}
       </CardContent>
@@ -221,15 +317,29 @@ export function ModelManagement() {
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Model</AlertDialogTitle>
+            <AlertDialogTitle>
+              {modelToDelete?.isCustom ? 'Remove Custom Model' : 'Delete Model'}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete <strong>{modelToDelete?.displayName}</strong>?
-              {modelToDelete?.sizeMb && (
+              Are you sure you want to {modelToDelete?.isCustom ? 'remove' : 'delete'}{' '}
+              <strong>{modelToDelete?.displayName}</strong>?
+              {modelToDelete?.isCustom ? (
                 <>
                   {' '}
-                  This will free up {formatSize(modelToDelete.sizeMb)} of disk space. The model will
-                  need to be re-downloaded if you want to use it again.
+                  This will remove it from your custom models list
+                  {modelToDelete?.sizeMb && (
+                    <> and free up {formatSize(modelToDelete.sizeMb)} of disk space</>
+                  )}
+                  .
                 </>
+              ) : (
+                modelToDelete?.sizeMb && (
+                  <>
+                    {' '}
+                    This will free up {formatSize(modelToDelete.sizeMb)} of disk space. The model
+                    will need to be re-downloaded if you want to use it again.
+                  </>
+                )
               )}
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -247,8 +357,10 @@ export function ModelManagement() {
               {deleteMutation.isPending ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Deleting...
+                  {modelToDelete?.isCustom ? 'Removing...' : 'Deleting...'}
                 </>
+              ) : modelToDelete?.isCustom ? (
+                'Remove'
               ) : (
                 'Delete'
               )}

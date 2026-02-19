@@ -23,7 +23,7 @@ import asyncio
 import signal
 import os
 
-from . import database, models, profiles, history, tts, transcribe, config, export_import, channels, stories, __version__
+from . import database, models, profiles, history, tts, transcribe, config, export_import, channels, stories, custom_models, __version__
 from .database import get_db, Generation as DBGeneration, VoiceProfile as DBVoiceProfile
 from .utils.progress import get_progress_manager
 from .utils.tasks import get_task_manager
@@ -1409,7 +1409,113 @@ async def get_model_status():
                 size_mb=None,
                 loaded=loaded,
             ))
-    
+
+    # Append user-added custom models
+    for custom_cfg in custom_models.list_custom_models():
+        try:
+            downloaded = False
+            size_mb = None
+
+            if cache_info:
+                repo_id = custom_cfg["hf_repo_id"]
+                for repo in cache_info.repos:
+                    if repo.repo_id == repo_id:
+                        has_model_weights = False
+                        for rev in repo.revisions:
+                            for f in rev.files:
+                                if f.file_name.lower().endswith(
+                                    ('.safetensors', '.bin', '.pt', '.pth', '.npz')
+                                ):
+                                    has_model_weights = True
+                                    break
+                            if has_model_weights:
+                                break
+                        has_incomplete = False
+                        try:
+                            blobs_dir = (
+                                Path(hf_constants.HF_HUB_CACHE)
+                                / ("models--" + repo_id.replace("/", "--"))
+                                / "blobs"
+                            )
+                            if blobs_dir.exists():
+                                has_incomplete = any(blobs_dir.glob("*.incomplete"))
+                        except Exception:
+                            pass
+                        if has_model_weights and not has_incomplete:
+                            downloaded = True
+                            try:
+                                total_size = sum(r.size_on_disk for r in repo.revisions)
+                                size_mb = total_size / (1024 * 1024)
+                            except Exception:
+                                pass
+                        break
+
+            if not downloaded:
+                try:
+                    repo_cache = (
+                        Path(hf_constants.HF_HUB_CACHE)
+                        / ("models--" + custom_cfg["hf_repo_id"].replace("/", "--"))
+                    )
+                    if repo_cache.exists():
+                        blobs_dir = repo_cache / "blobs"
+                        has_incomplete = blobs_dir.exists() and any(
+                            blobs_dir.glob("*.incomplete")
+                        )
+                        if not has_incomplete:
+                            snapshots_dir = repo_cache / "snapshots"
+                            has_model_files = False
+                            if snapshots_dir.exists():
+                                has_model_files = (
+                                    any(snapshots_dir.rglob("*.bin"))
+                                    or any(snapshots_dir.rglob("*.safetensors"))
+                                    or any(snapshots_dir.rglob("*.pt"))
+                                    or any(snapshots_dir.rglob("*.pth"))
+                                    or any(snapshots_dir.rglob("*.npz"))
+                                )
+                            if has_model_files:
+                                downloaded = True
+                                try:
+                                    total_size = sum(
+                                        f.stat().st_size
+                                        for f in repo_cache.rglob("*")
+                                        if f.is_file() and not f.name.endswith(".incomplete")
+                                    )
+                                    size_mb = total_size / (1024 * 1024)
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass
+
+            is_downloading = custom_cfg["hf_repo_id"] in active_download_repos
+            if is_downloading:
+                downloaded = False
+                size_mb = None
+
+            statuses.append(models.ModelStatus(
+                model_name=custom_cfg["model_name"],
+                display_name=custom_cfg["display_name"],
+                downloaded=downloaded,
+                downloading=is_downloading,
+                size_mb=size_mb,
+                loaded=False,
+                is_custom=True,
+            ))
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"Failed to check status for custom model {custom_cfg.get('model_name')}: {e}"
+            )
+            is_downloading = custom_cfg["hf_repo_id"] in active_download_repos
+            statuses.append(models.ModelStatus(
+                model_name=custom_cfg["model_name"],
+                display_name=custom_cfg["display_name"],
+                downloaded=False,
+                downloading=is_downloading,
+                size_mb=None,
+                loaded=False,
+                is_custom=True,
+            ))
+
     return models.ModelStatusListResponse(models=statuses)
 
 
@@ -1449,6 +1555,41 @@ async def trigger_model_download(request: models.ModelDownloadRequest):
     }
     
     if request.model_name not in model_configs:
+        # Check if it's a registered custom model
+        if request.model_name.startswith("custom-"):
+            custom_cfg = custom_models.get_custom_model(request.model_name)
+            if not custom_cfg:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Custom model '{request.model_name}' not found. "
+                           "Register it first via POST /models/custom.",
+                )
+
+            async def download_custom_background():
+                try:
+                    await asyncio.to_thread(
+                        custom_models.download_custom_model_sync,
+                        request.model_name,
+                        custom_cfg["hf_repo_id"],
+                    )
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).error(
+                        f"Custom model download failed for {request.model_name}: {e}"
+                    )
+                    # Errors are also reported via progress_manager inside download_custom_model_sync
+
+            task_manager.start_download(request.model_name)
+            progress_manager.update_progress(
+                model_name=request.model_name,
+                current=0,
+                total=0,
+                filename="Connecting to HuggingFace...",
+                status="downloading",
+            )
+            asyncio.create_task(download_custom_background())
+            return {"message": f"Custom model {request.model_name} download started"}
+
         raise HTTPException(status_code=400, detail=f"Unknown model: {request.model_name}")
     
     config = model_configs[request.model_name]
@@ -1529,6 +1670,31 @@ async def delete_model(model_name: str):
     }
     
     if model_name not in model_configs:
+        # Handle custom models
+        if model_name.startswith("custom-"):
+            custom_cfg = custom_models.get_custom_model(model_name)
+            if not custom_cfg:
+                raise HTTPException(status_code=404, detail=f"Custom model '{model_name}' not found")
+            hf_repo_id = custom_cfg["hf_repo_id"]
+            try:
+                cache_dir = hf_constants.HF_HUB_CACHE
+                repo_cache_dir = Path(cache_dir) / ("models--" + hf_repo_id.replace("/", "--"))
+                if repo_cache_dir.exists():
+                    try:
+                        shutil.rmtree(repo_cache_dir)
+                    except OSError as e:
+                        raise HTTPException(
+                            status_code=500,
+                            detail=f"Failed to delete model cache directory: {str(e)}"
+                        )
+                # Remove the registration regardless of whether cache existed
+                custom_models.remove_custom_model(model_name)
+                return {"message": f"Custom model {model_name} deleted successfully"}
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to delete custom model: {str(e)}")
+
         raise HTTPException(status_code=400, detail=f"Unknown model: {model_name}")
     
     config = model_configs[model_name]
@@ -1568,6 +1734,32 @@ async def delete_model(model_name: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete model: {str(e)}")
+
+
+@app.post("/models/custom", response_model=models.ModelStatus)
+async def add_custom_model(request: models.CustomModelAdd):
+    """Register a custom TTS model by HuggingFace URL or repo ID."""
+    from huggingface_hub import constants as hf_constants
+
+    try:
+        model_cfg = custom_models.add_custom_model(request.hf_url, request.display_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Check download status
+    hf_repo_id = model_cfg["hf_repo_id"]
+    repo_cache = Path(hf_constants.HF_HUB_CACHE) / ("models--" + hf_repo_id.replace("/", "--"))
+    downloaded = repo_cache.exists()
+
+    return models.ModelStatus(
+        model_name=model_cfg["model_name"],
+        display_name=model_cfg["display_name"],
+        downloaded=downloaded,
+        downloading=False,
+        size_mb=None,
+        loaded=False,
+        is_custom=True,
+    )
 
 
 @app.post("/cache/clear")
