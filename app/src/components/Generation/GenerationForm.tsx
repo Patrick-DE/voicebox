@@ -22,11 +22,14 @@ import { Textarea } from '@/components/ui/textarea';
 import { LANGUAGE_OPTIONS } from '@/lib/constants/languages';
 import { useGenerationForm } from '@/lib/hooks/useGenerationForm';
 import { useProfile } from '@/lib/hooks/useProfiles';
+import { useTTSModels } from '@/lib/hooks/useTTSModels';
 import { useUIStore } from '@/stores/uiStore';
 
 export function GenerationForm() {
   const selectedProfileId = useUIStore((state) => state.selectedProfileId);
   const { data: selectedProfile } = useProfile(selectedProfileId || '');
+  const { models: ttsModels } = useTTSModels();
+  const downloadedModels = ttsModels.filter((m) => m.downloaded);
 
   const { form, handleSubmit, isPending } = useGenerationForm();
 
@@ -129,16 +132,26 @@ export function GenerationForm() {
                 name="modelSize"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Model Size</FormLabel>
+                    <FormLabel>Model</FormLabel>
                     <Select onValueChange={field.onChange} defaultValue={field.value}>
                       <FormControl>
                         <SelectTrigger>
-                          <SelectValue />
+                          <SelectValue placeholder="Select model..." />
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        <SelectItem value="1.7B">Qwen TTS 1.7B (Higher Quality)</SelectItem>
-                        <SelectItem value="0.6B">Qwen TTS 0.6B (Faster)</SelectItem>
+                        {downloadedModels.length > 0 ? (
+                          downloadedModels.map((m) => (
+                            <SelectItem key={m.value} value={m.value}>
+                              {m.label}
+                            </SelectItem>
+                          ))
+                        ) : (
+                          <>
+                            <SelectItem value="1.7B">Qwen TTS 1.7B (Higher Quality)</SelectItem>
+                            <SelectItem value="0.6B">Qwen TTS 0.6B (Faster)</SelectItem>
+                          </>
+                        )}
                       </SelectContent>
                     </Select>
                     <FormDescription>Larger models produce better quality</FormDescription>

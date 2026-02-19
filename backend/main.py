@@ -560,38 +560,54 @@ async def generate_speech(
         # Load the requested model size if different from current (async to not block)
         model_size = data.model_size or "1.7B"
 
-        # Check if model needs to be downloaded first
-        model_path = tts_model._get_model_path(model_size)
-        if model_path.startswith("Qwen/"):
-            # Model not cached - check if it exists remotely or needs download
-            from huggingface_hub import constants as hf_constants
-            repo_cache = Path(hf_constants.HF_HUB_CACHE) / ("models--" + model_path.replace("/", "--"))
-            if not repo_cache.exists():
-                # Start download in background
-                model_name = f"qwen-tts-{model_size}"
-
-                async def download_model_background():
-                    try:
-                        await tts_model.load_model_async(model_size)
-                    except Exception as e:
-                        task_manager.error_download(model_name, str(e))
-
-                task_manager.start_download(model_name)
-                asyncio.create_task(download_model_background())
-
-                # Return 202 Accepted with download info
+        # Resolve custom model names (e.g. "custom-hexgrad-Kokoro-82M") to their HF repo IDs.
+        # Built-in model sizes ("1.7B", "0.6B") are passed through as-is.
+        if model_size.startswith("custom-"):
+            custom_cfg = custom_models.get_custom_model(model_size)
+            if not custom_cfg:
                 raise HTTPException(
-                    status_code=202,
-                    detail={
-                        "message": f"Model {model_size} is being downloaded. Please wait and try again.",
-                        "model_name": model_name,
-                        "downloading": True
-                    }
+                    status_code=404,
+                    detail=f"Custom model '{model_size}' not found. "
+                           "Register it first via POST /models/custom.",
                 )
+            # Use the HF repo ID as the effective model identifier for the TTS backend
+            effective_model_id = custom_cfg["hf_repo_id"]
+        else:
+            effective_model_id = model_size  # "1.7B" or "0.6B"
+
+        # Check if model needs to be downloaded first
+        model_path = tts_model._get_model_path(effective_model_id)
+        from huggingface_hub import constants as hf_constants
+        repo_cache = Path(hf_constants.HF_HUB_CACHE) / ("models--" + model_path.replace("/", "--"))
+        if not repo_cache.exists():
+            # Determine a display model_name for tracking
+            if effective_model_id in ("1.7B", "0.6B"):
+                download_model_name = f"qwen-tts-{effective_model_id}"
+            else:
+                download_model_name = model_size  # e.g. "custom-hexgrad-Kokoro-82M"
+
+            async def download_model_background():
+                try:
+                    await tts_model.load_model_async(effective_model_id)
+                except Exception as e:
+                    task_manager.error_download(download_model_name, str(e))
+
+            task_manager.start_download(download_model_name)
+            asyncio.create_task(download_model_background())
+
+            # Return 202 Accepted with download info
+            raise HTTPException(
+                status_code=202,
+                detail={
+                    "message": f"Model '{download_model_name}' is being downloaded. Please wait and try again.",
+                    "model_name": download_model_name,
+                    "downloading": True
+                }
+            )
 
         # Load the requested model BEFORE creating voice prompt,
-        # so create_voice_prompt uses the correct model size
-        await tts_model.load_model_async(model_size)
+        # so create_voice_prompt uses the correct model
+        await tts_model.load_model_async(effective_model_id)
 
         # Create voice prompt from profile
         voice_prompt = await profiles.create_voice_prompt_for_profile(

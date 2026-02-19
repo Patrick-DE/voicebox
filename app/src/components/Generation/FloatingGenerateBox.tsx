@@ -16,6 +16,7 @@ import { useToast } from '@/components/ui/use-toast';
 import { LANGUAGE_OPTIONS, type LanguageCode } from '@/lib/constants/languages';
 import { useGenerationForm } from '@/lib/hooks/useGenerationForm';
 import { useProfile, useProfiles } from '@/lib/hooks/useProfiles';
+import { useTTSModels } from '@/lib/hooks/useTTSModels';
 import { useAddStoryItem, useStory } from '@/lib/hooks/useStories';
 import { cn } from '@/lib/utils/cn';
 import { useStoryStore } from '@/stores/storyStore';
@@ -34,6 +35,8 @@ export function FloatingGenerateBox({
   const setSelectedProfileId = useUIStore((state) => state.setSelectedProfileId);
   const { data: selectedProfile } = useProfile(selectedProfileId || '');
   const { data: profiles } = useProfiles();
+  const { models: ttsModels } = useTTSModels();
+  const downloadedModels = ttsModels.filter((m) => m.downloaded);
   const [isExpanded, setIsExpanded] = useState(false);
   const [isInstructMode, setIsInstructMode] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -417,16 +420,26 @@ export function FloatingGenerateBox({
                         <Select onValueChange={field.onChange} defaultValue={field.value}>
                           <FormControl>
                             <SelectTrigger className="h-8 text-xs bg-card border-border rounded-full hover:bg-background/50 transition-all">
-                              <SelectValue />
+                              <SelectValue placeholder="Select model..." />
                             </SelectTrigger>
                           </FormControl>
                           <SelectContent>
-                            <SelectItem value="1.7B" className="text-xs text-muted-foreground">
-                              Qwen3-TTS 1.7B
-                            </SelectItem>
-                            <SelectItem value="0.6B" className="text-xs text-muted-foreground">
-                              Qwen3-TTS 0.6B
-                            </SelectItem>
+                            {downloadedModels.length > 0 ? (
+                              downloadedModels.map((m) => (
+                                <SelectItem key={m.value} value={m.value} className="text-xs text-muted-foreground">
+                                  {m.label}
+                                </SelectItem>
+                              ))
+                            ) : (
+                              <>
+                                <SelectItem value="1.7B" className="text-xs text-muted-foreground">
+                                  Qwen3-TTS 1.7B
+                                </SelectItem>
+                                <SelectItem value="0.6B" className="text-xs text-muted-foreground">
+                                  Qwen3-TTS 0.6B
+                                </SelectItem>
+                              </>
+                            )}
                           </SelectContent>
                         </Select>
                         <FormMessage className="text-xs" />

@@ -4,6 +4,7 @@ PyTorch backend implementation for TTS and STT.
 
 from typing import Optional, List, Tuple
 import asyncio
+import re
 import torch
 import numpy as np
 from pathlib import Path
@@ -43,13 +44,20 @@ class PyTorchTTSBackend:
     def is_loaded(self) -> bool:
         """Check if model is loaded."""
         return self.model is not None
+
+    @staticmethod
+    def _model_progress_name(model_size: str) -> str:
+        """Return a safe progress-tracking name for the given model identifier."""
+        if model_size in ("1.7B", "0.6B"):
+            return f"qwen-tts-{model_size}"
+        return "custom-" + re.sub(r"[^A-Za-z0-9-]", "-", model_size.replace("/", "-"))
     
     def _get_model_path(self, model_size: str) -> str:
         """
         Get the HuggingFace Hub model ID.
         
         Args:
-            model_size: Model size (1.7B or 0.6B)
+            model_size: Model size ('1.7B', '0.6B') or a raw HF repo ID for custom models
             
         Returns:
             HuggingFace Hub model ID
@@ -59,10 +67,11 @@ class PyTorchTTSBackend:
             "0.6B": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
         }
         
-        if model_size not in hf_model_map:
-            raise ValueError(f"Unknown model size: {model_size}")
+        if model_size in hf_model_map:
+            return hf_model_map[model_size]
         
-        return hf_model_map[model_size]
+        # For custom models, model_size is already the HF repo ID (e.g. "hexgrad/Kokoro-82M")
+        return model_size
     
     def _is_model_cached(self, model_size: str) -> bool:
         """
@@ -133,7 +142,7 @@ class PyTorchTTSBackend:
         try:
             progress_manager = get_progress_manager()
             task_manager = get_task_manager()
-            model_name = f"qwen-tts-{model_size}"
+            model_name = self._model_progress_name(model_size)
 
             # Check if model is already cached
             is_cached = self._is_model_cached(model_size)
@@ -195,7 +204,7 @@ class PyTorchTTSBackend:
             print(f"Error: qwen_tts package not found. Install with: pip install git+https://github.com/QwenLM/Qwen3-TTS.git")
             progress_manager = get_progress_manager()
             task_manager = get_task_manager()
-            model_name = f"qwen-tts-{model_size}"
+            model_name = self._model_progress_name(model_size)
             progress_manager.mark_error(model_name, str(e))
             task_manager.error_download(model_name, str(e))
             raise
@@ -204,7 +213,7 @@ class PyTorchTTSBackend:
             print(f"Tip: The model will be automatically downloaded from HuggingFace Hub on first use.")
             progress_manager = get_progress_manager()
             task_manager = get_task_manager()
-            model_name = f"qwen-tts-{model_size}"
+            model_name = self._model_progress_name(model_size)
             progress_manager.mark_error(model_name, str(e))
             task_manager.error_download(model_name, str(e))
             raise

@@ -33,7 +33,7 @@ export interface GenerationRequest {
   text: string;
   language: LanguageCode;
   seed?: number;
-  model_size?: '1.7B' | '0.6B';
+  model_size?: string;
 }
 
 export interface GenerationResponse {
