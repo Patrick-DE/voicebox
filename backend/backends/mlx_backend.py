@@ -4,6 +4,7 @@ MLX backend implementation for TTS and STT using mlx-audio.
 
 from typing import Optional, List, Tuple
 import asyncio
+import re
 import numpy as np
 from pathlib import Path
 
@@ -32,13 +33,20 @@ class MLXTTSBackend:
     def is_loaded(self) -> bool:
         """Check if model is loaded."""
         return self.model is not None
+
+    @staticmethod
+    def _model_progress_name(model_size: str) -> str:
+        """Return a safe progress-tracking name for the given model identifier."""
+        if model_size in ("1.7B", "0.6B"):
+            return f"qwen-tts-{model_size}"
+        return "custom-" + re.sub(r"[^A-Za-z0-9-]", "-", model_size.replace("/", "-"))
     
     def _get_model_path(self, model_size: str) -> str:
         """
         Get the MLX model path.
         
         Args:
-            model_size: Model size (1.7B or 0.6B)
+            model_size: Model size ('1.7B', '0.6B') or a raw HF repo ID for custom models
             
         Returns:
             HuggingFace Hub model ID for MLX
@@ -50,13 +58,14 @@ class MLXTTSBackend:
             "0.6B": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",  # Fallback to 1.7B
         }
         
-        if model_size not in mlx_model_map:
-            raise ValueError(f"Unknown model size: {model_size}")
+        if model_size in mlx_model_map:
+            hf_model_id = mlx_model_map[model_size]
+            print(f"Will download MLX model from HuggingFace Hub: {hf_model_id}")
+            return hf_model_id
         
-        hf_model_id = mlx_model_map[model_size]
-        print(f"Will download MLX model from HuggingFace Hub: {hf_model_id}")
-        
-        return hf_model_id
+        # For custom models, model_size is already the HF repo ID (e.g. "hexgrad/Kokoro-82M")
+        print(f"Will use custom model from HuggingFace Hub: {model_size}")
+        return model_size
     
     def _is_model_cached(self, model_size: str) -> bool:
         """
@@ -132,7 +141,7 @@ class MLXTTSBackend:
             # Set up progress tracking
             progress_manager = get_progress_manager()
             task_manager = get_task_manager()
-            model_name = f"qwen-tts-{model_size}"
+            model_name = self._model_progress_name(model_size)
             
             # Check if model is already cached
             is_cached = self._is_model_cached(model_size)
@@ -189,7 +198,7 @@ class MLXTTSBackend:
             print(f"Error: mlx_audio package not found. Install with: pip install mlx-audio")
             progress_manager = get_progress_manager()
             task_manager = get_task_manager()
-            model_name = f"qwen-tts-{model_size}"
+            model_name = self._model_progress_name(model_size)
             progress_manager.mark_error(model_name, str(e))
             task_manager.error_download(model_name, str(e))
             raise
@@ -197,7 +206,7 @@ class MLXTTSBackend:
             print(f"Error loading MLX TTS model: {e}")
             progress_manager = get_progress_manager()
             task_manager = get_task_manager()
-            model_name = f"qwen-tts-{model_size}"
+            model_name = self._model_progress_name(model_size)
             progress_manager.mark_error(model_name, str(e))
             task_manager.error_download(model_name, str(e))
             raise

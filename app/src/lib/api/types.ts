@@ -33,7 +33,7 @@ export interface GenerationRequest {
   text: string;
   language: LanguageCode;
   seed?: number;
-  model_size?: '1.7B' | '0.6B';
+  model_size?: string;
 }
 
 export interface GenerationResponse {
@@ -99,6 +99,7 @@ export interface ModelStatus {
   downloading: boolean;  // True if download is in progress
   size_mb?: number;
   loaded: boolean;
+  is_custom?: boolean;  // True for user-added custom models
 }
 
 export interface ModelStatusListResponse {
@@ -107,6 +108,11 @@ export interface ModelStatusListResponse {
 
 export interface ModelDownloadRequest {
   model_name: string;
+}
+
+export interface CustomModelAdd {
+  hf_url: string;
+  display_name?: string;
 }
 
 export interface ActiveDownloadTask {

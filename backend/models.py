@@ -55,7 +55,10 @@ class GenerationRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=5000)
     language: str = Field(default="en", pattern="^(zh|en|ja|ko|de|fr|ru|pt|es|it)$")
     seed: Optional[int] = Field(None, ge=0)
-    model_size: Optional[str] = Field(default="1.7B", pattern="^(1\\.7B|0\\.6B)$")
+    model_size: Optional[str] = Field(
+        default="1.7B",
+        description="Model identifier: '1.7B', '0.6B', or a custom model name like 'custom-owner-repo'",
+    )
     instruct: Optional[str] = Field(None, max_length=500)
 
 
@@ -137,6 +140,7 @@ class ModelStatus(BaseModel):
     downloading: bool = False  # True if download is in progress
     size_mb: Optional[float] = None
     loaded: bool = False
+    is_custom: bool = False  # True for user-added custom models
 
 
 class ModelStatusListResponse(BaseModel):
@@ -147,6 +151,16 @@ class ModelStatusListResponse(BaseModel):
 class ModelDownloadRequest(BaseModel):
     """Request model for triggering model download."""
     model_name: str
+
+
+class CustomModelAdd(BaseModel):
+    """Request model for adding a custom HuggingFace model."""
+    hf_url: str = Field(
+        ...,
+        description="HuggingFace model URL or repo ID (e.g., 'hexgrad/Kokoro-82M' or "
+                    "'https://huggingface.co/hexgrad/Kokoro-82M')",
+    )
+    display_name: Optional[str] = Field(None, max_length=100, description="Optional display name")
 
 
 class ActiveDownloadTask(BaseModel):

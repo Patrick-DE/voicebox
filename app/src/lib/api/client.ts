@@ -11,8 +11,10 @@ import type {
   HistoryResponse,
   TranscriptionResponse,
   HealthResponse,
+  ModelStatus,
   ModelStatusListResponse,
   ModelDownloadRequest,
+  CustomModelAdd,
   ActiveTasksResponse,
   StoryCreate,
   StoryResponse,
@@ -322,6 +324,15 @@ class ApiClient {
   async deleteModel(modelName: string): Promise<{ message: string }> {
     return this.request<{ message: string }>(`/models/${modelName}`, {
       method: 'DELETE',
+    });
+  }
+
+  async addCustomModel(hfUrl: string, displayName?: string): Promise<ModelStatus> {
+    const body: CustomModelAdd = { hf_url: hfUrl };
+    if (displayName) body.display_name = displayName;
+    return this.request<ModelStatus>('/models/custom', {
+      method: 'POST',
+      body: JSON.stringify(body),
     });
   }
 
