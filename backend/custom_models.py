@@ -95,10 +95,15 @@ def add_custom_model(hf_url: str, display_name: Optional[str] = None) -> Dict:
     if display_name is None:
         display_name = repo_id.split("/")[-1]
 
+    # Auto-detect the model type from the repo ID
+    from .backends.model_adapters import detect_model_type
+    model_type = detect_model_type(repo_id)
+
     model_config = {
         "model_name": model_name,
         "display_name": display_name,
         "hf_repo_id": repo_id,
+        "model_type": model_type,
     }
 
     existing.append(model_config)

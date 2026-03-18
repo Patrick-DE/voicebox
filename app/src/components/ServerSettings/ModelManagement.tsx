@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Download, Loader2, Plus, Trash2 } from 'lucide-react';
-import { useCallback, useState } from 'react';
+import { Download, Eye, EyeOff, Key, Loader2, Plus, Trash2, X } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -26,6 +26,61 @@ export function ModelManagement() {
   const [downloadingDisplayName, setDownloadingDisplayName] = useState<string | null>(null);
   const [customModelUrl, setCustomModelUrl] = useState('');
   const [customModelDisplayName, setCustomModelDisplayName] = useState('');
+  const [hfToken, setHfToken] = useState('');
+  const [showToken, setShowToken] = useState(false);
+  const [tokenSaved, setTokenSaved] = useState(false);
+
+  // Load saved HF token on mount
+  const { data: savedToken } = useQuery({
+    queryKey: ['hfToken'],
+    queryFn: async () => {
+      try {
+        const result = await apiClient.request<{ token: string; is_set: boolean }>('/settings/hf-token');
+        return result;
+      } catch {
+        return { token: '', is_set: false };
+      }
+    },
+  });
+
+  useEffect(() => {
+    if (savedToken?.is_set) {
+      setHfToken('••••••••••••');
+      setTokenSaved(true);
+    }
+  }, [savedToken]);
+
+  const saveTokenMutation = useMutation({
+    mutationFn: async (token: string) => {
+      return apiClient.request<{ message: string }>('/settings/hf-token', {
+        method: 'POST',
+        body: JSON.stringify({ token }),
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+    onSuccess: () => {
+      setTokenSaved(true);
+      toast({ title: 'Token saved', description: 'HuggingFace token has been saved.' });
+      queryClient.invalidateQueries({ queryKey: ['hfToken'] });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Failed to save token', description: error.message, variant: 'destructive' });
+    },
+  });
+
+  const clearTokenMutation = useMutation({
+    mutationFn: async () => {
+      return apiClient.request<{ message: string }>('/settings/hf-token', {
+        method: 'DELETE',
+      });
+    },
+    onSuccess: () => {
+      setHfToken('');
+      setTokenSaved(false);
+      toast({ title: 'Token cleared', description: 'HuggingFace token has been removed.' });
+      queryClient.invalidateQueries({ queryKey: ['hfToken'] });
+    },
+  });
 
   const { data: modelStatus, isLoading } = useQuery({
     queryKey: ['modelStatus'],
@@ -71,11 +126,11 @@ export function ModelManagement() {
 
   const handleDownload = async (modelName: string) => {
     console.log('[Download] Button clicked for:', modelName, 'at', new Date().toISOString());
-    
+
     // Find display name
     const model = modelStatus?.models.find((m) => m.model_name === modelName);
     const displayName = model?.display_name || modelName;
-    
+
     try {
       // IMPORTANT: Call the API FIRST before setting state
       // Setting state enables the SSE EventSource in useModelDownloadToast,
@@ -83,11 +138,11 @@ export function ModelManagement() {
       console.log('[Download] Calling download API for:', modelName);
       const result = await apiClient.triggerModelDownload(modelName);
       console.log('[Download] Download API responded:', result);
-      
+
       // NOW set state to enable SSE tracking (after download has started on backend)
       setDownloadingModel(modelName);
       setDownloadingDisplayName(displayName);
-      
+
       // Download initiated successfully - state will be cleared when SSE reports completion
       // or by the polling interval detecting the model is downloaded
       queryClient.invalidateQueries({ queryKey: ['modelStatus'] });
@@ -121,7 +176,7 @@ export function ModelManagement() {
       // Invalidate AND explicitly refetch to ensure UI updates
       // Using refetchType: 'all' ensures we refetch even if the query is stale
       console.log('[Delete] Invalidating modelStatus query');
-      await queryClient.invalidateQueries({ 
+      await queryClient.invalidateQueries({
         queryKey: ['modelStatus'],
         refetchType: 'all',
       });
@@ -184,6 +239,57 @@ export function ModelManagement() {
           Download and manage AI models for voice generation and transcription
         </CardDescription>
       </CardHeader>
+
+      {/* HuggingFace Token Section */}
+      <div className="px-6 pb-2">
+        <div className="flex items-center gap-2 mb-2">
+          <Key className="h-4 w-4 text-muted-foreground" />
+          <span className="text-sm font-medium text-muted-foreground">HuggingFace Token</span>
+          {tokenSaved && (
+            <span className="text-xs text-green-500">✓ Saved</span>
+          )}
+        </div>
+        <div className="flex gap-2">
+          <div className="relative flex-1">
+            <Input
+              type={showToken ? 'text' : 'password'}
+              placeholder="hf_... (required for gated models)"
+              value={hfToken}
+              onChange={(e) => { setHfToken(e.target.value); setTokenSaved(false); }}
+              onKeyDown={(e) => e.key === 'Enter' && hfToken.trim() && !tokenSaved && saveTokenMutation.mutate(hfToken.trim())}
+              className="pr-8"
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="absolute right-0 top-0 h-full px-2 hover:bg-transparent"
+              onClick={() => setShowToken(!showToken)}
+            >
+              {showToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </Button>
+          </div>
+          {!tokenSaved ? (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => hfToken.trim() && saveTokenMutation.mutate(hfToken.trim())}
+              disabled={!hfToken.trim() || saveTokenMutation.isPending}
+            >
+              {saveTokenMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Save'}
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => clearTokenMutation.mutate()}
+              disabled={clearTokenMutation.isPending}
+            >
+              {clearTokenMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <X className="h-4 w-4" />}
+            </Button>
+          )}
+        </div>
+      </div>
       <CardContent className="space-y-4">
         {isLoading ? (
           <div className="flex items-center justify-center py-8">
@@ -271,6 +377,7 @@ export function ModelManagement() {
                       }}
                       isDownloading={downloadingModel === model.model_name}
                       formatSize={formatSize}
+                      isCustom
                     />
                   ))}
 
@@ -385,12 +492,13 @@ interface ModelItemProps {
   onDelete: () => void;
   isDownloading: boolean;  // Local state - true if user just clicked download
   formatSize: (sizeMb?: number) => string;
+  isCustom?: boolean;
 }
 
-function ModelItem({ model, onDownload, onDelete, isDownloading, formatSize }: ModelItemProps) {
+function ModelItem({ model, onDownload, onDelete, isDownloading, formatSize, isCustom }: ModelItemProps) {
   // Use server's downloading state OR local state (for immediate feedback before server updates)
   const showDownloading = model.downloading || isDownloading;
-  
+
   return (
     <div className="flex items-center justify-between p-3 border rounded-lg">
       <div className="flex-1">
@@ -436,10 +544,22 @@ function ModelItem({ model, onDownload, onDelete, isDownloading, formatSize }: M
             Downloading...
           </Button>
         ) : (
-          <Button size="sm" onClick={onDownload} variant="outline">
-            <Download className="h-4 w-4 mr-2" />
-            Download
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button size="sm" onClick={onDownload} variant="outline">
+              <Download className="h-4 w-4 mr-2" />
+              Download
+            </Button>
+            {isCustom && (
+              <Button
+                size="sm"
+                onClick={onDelete}
+                variant="outline"
+                title="Remove custom model"
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            )}
+          </div>
         )}
       </div>
     </div>

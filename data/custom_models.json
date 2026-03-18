@@ -1,0 +1,17 @@
+[
+  {
+    "model_name": "custom-hexgrad-Kokoro-TTS",
+    "display_name": "Kokoro-TTS",
+    "hf_repo_id": "hexgrad/Kokoro-TTS"
+  },
+  {
+    "model_name": "custom-fishaudio-s1-mini",
+    "display_name": "s1-mini",
+    "hf_repo_id": "fishaudio/s1-mini"
+  },
+  {
+    "model_name": "custom-hexgrad-Kokoro-82M",
+    "display_name": "Kokoro-82M",
+    "hf_repo_id": "hexgrad/Kokoro-82M"
+  }
+]

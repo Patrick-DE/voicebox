@@ -23,7 +23,7 @@ import asyncio
 import signal
 import os
 
-from . import database, models, profiles, history, tts, transcribe, config, export_import, channels, stories, custom_models, __version__
+from . import database, models, profiles, history, tts, transcribe, config, export_import, channels, stories, custom_models, settings, __version__
 from .database import get_db, Generation as DBGeneration, VoiceProfile as DBVoiceProfile
 from .utils.progress import get_progress_manager
 from .utils.tasks import get_task_manager
@@ -1778,6 +1778,37 @@ async def add_custom_model(request: models.CustomModelAdd):
     )
 
 
+# ============================================
+# SETTINGS
+# ============================================
+
+@app.get("/settings/hf-token")
+async def get_hf_token():
+    """Check if a HuggingFace token is configured."""
+    token = settings.get_hf_token()
+    return {
+        "token": "",  # Never return the actual token to the frontend
+        "is_set": token is not None and len(token) > 0,
+    }
+
+
+@app.post("/settings/hf-token")
+async def set_hf_token(request: dict):
+    """Save a HuggingFace token for downloading gated models."""
+    token = request.get("token", "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Token cannot be empty")
+    settings.set_hf_token(token)
+    return {"message": "HuggingFace token saved successfully"}
+
+
+@app.delete("/settings/hf-token")
+async def clear_hf_token():
+    """Remove the stored HuggingFace token."""
+    settings.clear_hf_token()
+    return {"message": "HuggingFace token cleared"}
+
+
 @app.post("/cache/clear")
 async def clear_cache():
     """Clear all voice prompt caches (memory and disk)."""
@@ -1882,6 +1913,9 @@ async def startup_event():
     backend_type = get_backend_type()
     print(f"Backend: {backend_type.upper()}")
     print(f"GPU available: {_get_gpu_status()}")
+
+    # Apply saved HuggingFace token (for gated model downloads)
+    settings.apply_saved_token()
 
     # Initialize progress manager with main event loop for thread-safe operations
     try:

@@ -31,6 +31,8 @@ class PyTorchTTSBackend:
         self.model_size = model_size
         self.device = self._get_device()
         self._current_model_size = None
+        self._model_type = "qwen"  # "qwen", "xtts", "chatterbox", etc.
+        self._adapter = None  # ModelAdapter instance for non-Qwen models
     
     def _get_device(self) -> str:
         """Get the best available device."""
@@ -147,47 +149,62 @@ class PyTorchTTSBackend:
             # Check if model is already cached
             is_cached = self._is_model_cached(model_size)
 
+            # Determine model type for custom models
+            model_type = "qwen"  # default
+            if model_size not in ("1.7B", "0.6B"):
+                # Custom model — detect type from repo ID or stored config
+                from .model_adapters import detect_model_type
+                model_type = detect_model_type(model_size)
+
             # Set up progress callback and tracker
-            # If cached: filter out non-download progress (like "Segment 1/1" during generation)
-            # If not cached: report all progress (we're actually downloading)
             progress_callback = create_hf_progress_callback(model_name, progress_manager)
             tracker = HFProgressTracker(progress_callback, filter_non_downloads=is_cached)
 
-            # Patch tqdm BEFORE importing qwen_tts
+            # Patch tqdm BEFORE importing any TTS library
             tracker_context = tracker.patch_download()
             tracker_context.__enter__()
-
-            # Import qwen_tts
-            from qwen_tts import Qwen3TTSModel
 
             # Get model path (local or HuggingFace Hub ID)
             model_path = self._get_model_path(model_size)
 
-            print(f"Loading TTS model {model_size} on {self.device}...")
+            print(f"Loading TTS model {model_size} (type={model_type}) on {self.device}...")
 
             # Only track download progress if model is NOT cached
             if not is_cached:
-                # Start tracking download task
                 task_manager.start_download(model_name)
-
-                # Initialize progress state so SSE endpoint has initial data to send
                 progress_manager.update_progress(
                     model_name=model_name,
                     current=0,
-                    total=0,  # Will be updated once actual total is known
+                    total=0,
                     filename="Connecting to HuggingFace...",
                     status="downloading",
                 )
 
-            # Load the model (tqdm is patched, but filters out non-download progress)
             try:
-                self.model = Qwen3TTSModel.from_pretrained(
-                    model_path,
-                    device_map=self.device,
-                    torch_dtype=torch.float32 if self.device == "cpu" else torch.bfloat16,
-                )
+                if model_type != "qwen":
+                    # Load via adapter (XTTS, Chatterbox, etc.)
+                    from .model_adapters import create_adapter
+                    adapter = create_adapter(model_type)
+                    if adapter is None:
+                        raise ValueError(
+                            f"No adapter available for model type '{model_type}'. "
+                            f"This model architecture is not supported."
+                        )
+                    adapter.load(model_path, self.device)
+                    self._adapter = adapter
+                    self._model_type = model_type
+                    self.model = adapter  # store adapter as 'model' so is_loaded() works
+                else:
+                    # Load Qwen3 TTS (original path)
+                    from qwen_tts import Qwen3TTSModel
+                    self.model = Qwen3TTSModel.from_pretrained(
+                        model_path,
+                        device_map=self.device,
+                        torch_dtype=torch.float32 if self.device == "cpu" else torch.bfloat16,
+                    )
+                    self._adapter = None
+                    self._model_type = "qwen"
             finally:
-                # Exit the patch context
                 tracker_context.__exit__(None, None, None)
             
             # Only mark download as complete if we were tracking it
@@ -198,10 +215,10 @@ class PyTorchTTSBackend:
             self._current_model_size = model_size
             self.model_size = model_size
             
-            print(f"TTS model {model_size} loaded successfully")
+            print(f"TTS model {model_size} loaded successfully (type={self._model_type})")
             
         except ImportError as e:
-            print(f"Error: qwen_tts package not found. Install with: pip install git+https://github.com/QwenLM/Qwen3-TTS.git")
+            print(f"Error: Required package not found: {e}")
             progress_manager = get_progress_manager()
             task_manager = get_task_manager()
             model_name = self._model_progress_name(model_size)
@@ -210,7 +227,6 @@ class PyTorchTTSBackend:
             raise
         except Exception as e:
             print(f"Error loading TTS model: {e}")
-            print(f"Tip: The model will be automatically downloaded from HuggingFace Hub on first use.")
             progress_manager = get_progress_manager()
             task_manager = get_task_manager()
             model_name = self._model_progress_name(model_size)
@@ -220,10 +236,14 @@ class PyTorchTTSBackend:
     
     def unload_model(self):
         """Unload the model to free memory."""
+        if self._adapter is not None:
+            self._adapter.unload()
+            self._adapter = None
         if self.model is not None:
             del self.model
             self.model = None
             self._current_model_size = None
+            self._model_type = "qwen"
             
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -249,20 +269,21 @@ class PyTorchTTSBackend:
         """
         await self.load_model_async(None)
         
+        # For adapter-based models, voice prompt is just the ref audio path
+        # (adapters handle cloning internally during generate())
+        if self._adapter is not None:
+            prompt = self._adapter.create_voice_prompt(str(audio_path), reference_text)
+            return prompt, False
+        
+        # Qwen3 path: create voice clone prompt
         # Check cache if enabled
         if use_cache:
             cache_key = get_cache_key(audio_path, reference_text)
             cached_prompt = get_cached_voice_prompt(cache_key)
             if cached_prompt is not None:
-                # Cache stores as torch.Tensor but actual prompt is dict
-                # Convert if needed
                 if isinstance(cached_prompt, dict):
-                    # For PyTorch backend, the dict should contain tensors, not file paths
-                    # So we can safely return it
                     return cached_prompt, True
                 elif isinstance(cached_prompt, torch.Tensor):
-                    # Legacy cache format - convert to dict
-                    # This shouldn't happen in practice, but handle it
                     return {"prompt": cached_prompt}, True
         
         def _create_prompt_sync():
@@ -273,10 +294,8 @@ class PyTorchTTSBackend:
                 x_vector_only_mode=False,
             )
         
-        # Run blocking operation in thread pool
         voice_prompt_items = await asyncio.to_thread(_create_prompt_sync)
         
-        # Cache if enabled
         if use_cache:
             cache_key = get_cache_key(audio_path, reference_text)
             cache_voice_prompt(cache_key, voice_prompt_items)
@@ -338,15 +357,31 @@ class PyTorchTTSBackend:
         # Load model
         await self.load_model_async(None)
 
+        # Dispatch to adapter for non-Qwen models
+        if self._adapter is not None:
+            def _adapter_generate():
+                if seed is not None:
+                    torch.manual_seed(seed)
+                    if torch.cuda.is_available():
+                        torch.cuda.manual_seed(seed)
+                return self._adapter.generate(
+                    text=text,
+                    voice_prompt=voice_prompt,
+                    language=language,
+                    seed=seed,
+                    instruct=instruct,
+                )
+            audio, sample_rate = await asyncio.to_thread(_adapter_generate)
+            return audio, sample_rate
+
+        # Qwen3 path
         def _generate_sync():
             """Run synchronous generation in thread pool."""
-            # Set seed if provided
             if seed is not None:
                 torch.manual_seed(seed)
                 if torch.cuda.is_available():
                     torch.cuda.manual_seed(seed)
 
-            # Generate audio - this is the blocking operation
             wavs, sample_rate = self.model.generate_voice_clone(
                 text=text,
                 voice_clone_prompt=voice_prompt,
@@ -355,9 +390,7 @@ class PyTorchTTSBackend:
             )
             return wavs[0], sample_rate
 
-        # Run blocking inference in thread pool to avoid blocking event loop
         audio, sample_rate = await asyncio.to_thread(_generate_sync)
-
         return audio, sample_rate
 
 
